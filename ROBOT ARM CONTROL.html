@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Robot Arm - Joint Control + Sequence Player</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #0a0a0a; color: #0f0; text-align: center; padding: 20px; }
+    h1 { color: #0f0; }
+    h2 { color: #0f0; margin-top: 0; }
+    .section { margin: 20px auto; max-width: 700px; background: #1a1a1a; padding: 15px; border-radius: 10px; }
+    label { display: block; margin: 12px 0 6px 0; font-weight: bold; text-align: left; }
+    input[type="range"] { width: 100%; }
+    input[type="number"], input[type="text"], select {
+      background: #0a0a0a; color: #0ff; border: 1px solid #0f0; border-radius: 6px;
+      padding: 6px 8px; font-size: 14px;
+    }
+    .value { color: #0ff; font-size: 1.3em; }
+    button {
+      padding: 12px 24px; margin: 6px; font-size: 16px; background: #0f0; color: black;
+      border: none; border-radius: 6px; cursor: pointer; font-weight: bold;
+    }
+    button:hover { background: #3f3; }
+    button:disabled { background: #333; color: #777; cursor: not-allowed; }
+    .danger { background: #ff3333; color: white; }
+    .danger:hover { background: #ff6666; }
+    .play-btn { background: #ffaa00; color: black; }
+    .play-btn:hover { background: #ffc04d; }
+    .stop-btn { background: #ff3333; color: white; }
+    .stop-btn:hover { background: #ff6666; }
+
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+    th, td { border: 1px solid #0f0; padding: 6px 4px; text-align: center; }
+    th { background: #0f2f0f; }
+    tr.active-step { background: #003300; }
+    tr.active-step td { color: #fff; font-weight: bold; }
+    td input[type="number"] { width: 60px; text-align: center; }
+    .remove-btn { background: #ff3333; color: white; padding: 4px 10px; font-size: 12px; margin: 0; }
+    .small-btn { padding: 8px 14px; font-size: 13px; }
+    .row { display: flex; gap: 10px; justify-content: center; align-items: center; flex-wrap: wrap; }
+    .play-status { font-size: 16px; color: #ffaa00; min-height: 24px; margin-top: 8px; }
+    .hint { font-size: 12px; color: #888; text-align: left; margin-top: -4px; }
+  </style>
+</head>
+<body>
+  <h1>🤖 Robot Arm - Joint Control + Sequence Player</h1>
+  <p id="status">Click Connect to start</p>
+
+  <div class="section">
+    <h2>Joints (direct control, no IK)</h2>
+    <label>Base Rotation (Ch 0): <span id="v0" class="value">90</span>°</label>
+    <input type="range" id="ch0" min="0" max="180" value="90" oninput="sendManual(0, this.value)">
+
+    <label>Link 1 (Ch 3): <span id="v3" class="value">90</span>°</label>
+    <input type="range" id="ch3" min="0" max="180" value="90" oninput="sendManual(3, this.value)">
+
+    <label>Link 2 (Ch 6): <span id="v6" class="value">90</span>°</label>
+    <input type="range" id="ch6" min="0" max="180" value="90" oninput="sendManual(6, this.value)">
+
+    <label>Link 3 (Ch 9): <span id="v9" class="value">90</span>°</label>
+    <input type="range" id="ch9" min="0" max="180" value="90" oninput="sendManual(9, this.value)">
+
+    <label>Wrist Rotation (Ch 12): <span id="v12" class="value">90</span>°</label>
+    <input type="range" id="ch12" min="0" max="180" value="90" oninput="sendManual(12, this.value)">
+
+    <label>Gripper (Ch 15): <span id="v15" class="value">90</span>°</label>
+    <input type="range" id="ch15" min="0" max="180" value="90" oninput="sendManual(15, this.value)">
+  </div>
+
+  <button onclick="connectWebSerial()">🔗 Connect to Arduino</button>
+  <button onclick="centerAll()">Center All (90°)</button>
+
+  <div class="section">
+    <h2>🔁 Pick &amp; Place Sequence</h2>
+    <p class="hint">Move the joints to a pose, then "Add Current as Step" to append it. Click 👁 on a step to move the arm to that pose and select it — "Add Current as Step" will then insert the new pose right after it. Click ✎ to edit a step in place. Speed controls how fast the arm travels between poses.</p>
+
+    <div class="row">
+      <label style="display:inline-block; margin:0;">Speed (°/sec):
+        <input type="number" id="moveSpeed" value="90" min="5" max="500" step="5" style="width:80px;">
+      </label>
+      <label style="display:inline-block; margin:0;">Hold after move (ms):
+        <input type="number" id="stepDelay" value="800" min="50" step="50" style="width:80px;">
+      </label>
+      <button class="small-btn" id="addStepBtn" onclick="addStep()">➕ Add Current as Step</button>
+      <button class="small-btn" id="saveEditBtn" style="display:none; background:#0ff;">💾 Save Changes</button>
+      <button class="small-btn" id="cancelEditBtn" onclick="cancelMode()" style="display:none;">✖ Cancel</button>
+      <button class="small-btn" onclick="loadDemoSequence()">✨ Load Simple Demo</button>
+      <button class="small-btn danger" onclick="clearSequence()">🗑 Clear All</button>
+    </div>
+
+    <table id="seqTable">
+      <thead>
+        <tr><th>#</th><th>Base</th><th>Link1</th><th>Link2</th><th>Link3</th><th>Wrist</th><th>Grip</th><th>Hold(ms)</th><th></th><th></th></tr>
+      </thead>
+      <tbody id="seqBody"></tbody>
+    </table>
+
+    <div class="row" style="margin-top:14px;">
+      <button class="play-btn" id="playOnceBtn" onclick="playOnce()">▶ Play Once</button>
+      <button class="play-btn" id="playLoopBtn" onclick="playLoop()">🔁 Play Loop (Forever)</button>
+      <button class="stop-btn" id="stopBtn" onclick="stopSequence()" disabled>⏹ Stop</button>
+    </div>
+    <div class="play-status" id="playStatus"></div>
+
+    <div class="row" style="margin-top:14px; border-top:1px solid #0f0; padding-top:12px;">
+      <input type="text" id="seqName" placeholder="Sequence name">
+      <button class="small-btn" onclick="saveNamedSequence()">💾 Save</button>
+      <select id="savedSeqs"></select>
+      <button class="small-btn" onclick="loadNamedSequence()">📂 Load</button>
+      <button class="small-btn danger" onclick="deleteNamedSequence()">❌ Delete</button>
+    </div>
+  </div>
+
+  <script>
+    let port, writer;
+    let sequence = [];
+    let isPlaying = false;
+    let editingIndex = null;
+    let viewIndex = null;
+    const CHANNELS = [0, 3, 6, 9, 12, 15];
+
+    async function connectWebSerial() {
+      try {
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+        writer = port.writable.getWriter();
+        document.getElementById('status').innerHTML = "✅ Connected!";
+        document.getElementById('status').style.color = "#0f0";
+      } catch (err) {
+        alert("Connection failed: " + err);
+      }
+    }
+
+    async function sendPosition(ch, pulse) {
+      if (!writer) return;
+      try {
+        await writer.write(new TextEncoder().encode(`${ch}:${Math.round(pulse)}\n`));
+      } catch (e) {}
+    }
+
+    function sendManual(ch, angle) {
+      angle = parseInt(angle);
+      document.getElementById('v' + ch).textContent = angle;
+      sendPosition(ch, 125 + (angle / 180) * 500);
+    }
+
+    function setSlider(ch, val) {
+      document.getElementById('ch' + ch).value = val;
+    }
+
+    function centerAll() {
+      const target = {};
+      CHANNELS.forEach(ch => { target[ch] = 90; });
+      moveTo(target, () => true);
+    }
+
+    // Reads servo speed setting (degrees per second) from the UI
+    function getMoveSpeed() {
+      return Math.max(5, parseInt(document.getElementById('moveSpeed').value) || 90);
+    }
+
+    // Moves all 6 joints from their current angle to targetPose at a controlled
+    // speed (deg/sec), instead of jumping straight to the target. This is the
+    // software equivalent of velocity control: since these servos don't expose
+    // a speed setting of their own, we just send many small intermediate
+    // positions instead of one big jump, spaced out over time.
+    // keepGoing() is checked every tick so playback can be stopped mid-move.
+    async function moveTo(targetPose, keepGoing) {
+      const start = {};
+      CHANNELS.forEach(ch => { start[ch] = parseInt(document.getElementById('ch' + ch).value); });
+
+      const maxDelta = Math.max(...CHANNELS.map(ch => Math.abs(targetPose[ch] - start[ch])));
+      if (maxDelta === 0) return;
+
+      const speed = getMoveSpeed();          // degrees per second
+      const tickMs = 20;                     // ~50 updates/sec, smooth enough for hobby servos
+      const totalMs = (maxDelta / speed) * 1000;
+      const steps = Math.max(1, Math.round(totalMs / tickMs));
+
+      for (let i = 1; i <= steps; i++) {
+        if (!keepGoing()) return;
+        const t = i / steps;
+        CHANNELS.forEach(ch => {
+          const val = Math.round(start[ch] + (targetPose[ch] - start[ch]) * t);
+          setSlider(ch, val);
+          sendManual(ch, val);
+        });
+        await rawSleep(tickMs);
+      }
+    }
+
+    function rawSleep(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    // ---------- Sequence builder ----------
+
+    function currentPose() {
+      const pose = { delay: parseInt(document.getElementById('stepDelay').value) || 800 };
+      CHANNELS.forEach(ch => { pose[ch] = parseInt(document.getElementById('ch' + ch).value); });
+      return pose;
+    }
+
+    function addStep() {
+      const pose = currentPose();
+      if (viewIndex !== null) {
+        sequence.splice(viewIndex + 1, 0, pose);
+        viewIndex = null;
+      } else {
+        sequence.push(pose);
+      }
+      renderSequence();
+      autosave();
+    }
+
+    function toggleView(i) {
+      if (isPlaying) return;
+      if (viewIndex === i) {
+        viewIndex = null;
+      } else {
+        viewIndex = i;
+        // Move the arm to this step's pose so the eye shows you exactly where it is
+        moveTo(sequence[i], () => true);
+      }
+      renderSequence();
+      updateModeButtons();
+    }
+
+    function closeView() {
+      viewIndex = null;
+      renderSequence();
+      updateModeButtons();
+    }
+
+    function startEditStep(i) {
+      if (isPlaying) return;
+      editingIndex = i;
+      viewIndex = null;
+      const s = sequence[i];
+      document.getElementById('stepDelay').value = s.delay;
+      // Move there at the set speed (not an instant jump) so you can watch it arrive
+      moveTo(s, () => true);
+      renderSequence();
+      updateModeButtons();
+    }
+
+    function saveEditedStep() {
+      if (editingIndex === null) return;
+      sequence[editingIndex] = currentPose();
+      editingIndex = null;
+      renderSequence();
+      autosave();
+      updateModeButtons();
+    }
+
+    function cancelMode() {
+      editingIndex = null;
+      renderSequence();
+      updateModeButtons();
+    }
+
+    function updateModeButtons() {
+      const addBtn = document.getElementById('addStepBtn');
+      const saveBtn = document.getElementById('saveEditBtn');
+      const cancelBtn = document.getElementById('cancelEditBtn');
+      if (editingIndex !== null) {
+        addBtn.style.display = 'none';
+        saveBtn.style.display = 'inline-block';
+        saveBtn.textContent = `💾 Save Changes to Step ${editingIndex + 1}`;
+        saveBtn.onclick = saveEditedStep;
+        cancelBtn.style.display = 'inline-block';
+      } else {
+        addBtn.style.display = 'inline-block';
+        addBtn.textContent = (viewIndex !== null)
+          ? `➕ Add Current as Step (after #${viewIndex + 1})`
+          : '➕ Add Current as Step';
+        saveBtn.style.display = 'none';
+        cancelBtn.style.display = 'none';
+      }
+    }
+
+    function removeStep(i) {
+      sequence.splice(i, 1);
+      if (editingIndex === i) editingIndex = null;
+      else if (editingIndex !== null && editingIndex > i) editingIndex--;
+      if (viewIndex === i) viewIndex = null;
+      else if (viewIndex !== null && viewIndex > i) viewIndex--;
+      renderSequence();
+      autosave();
+      updateModeButtons();
+    }
+
+    function clearSequence() {
+      if (sequence.length && !confirm("Clear the whole sequence?")) return;
+      sequence = [];
+      editingIndex = null;
+      viewIndex = null;
+      renderSequence();
+      autosave();
+      updateModeButtons();
+    }
+
+    function renderSequence(activeIndex = -1) {
+      const body = document.getElementById('seqBody');
+      body.innerHTML = '';
+      sequence.forEach((s, i) => {
+        const tr = document.createElement('tr');
+        if (i === activeIndex || i === editingIndex || i === viewIndex) tr.classList.add('active-step');
+
+        const actionsHtml = (i === viewIndex)
+          ? `<button class="small-btn" style="padding:4px 8px;font-size:12px;" onclick="startEditStep(${i})">✎ Edit</button>
+             <button class="small-btn" style="padding:4px 8px;font-size:12px;" onclick="closeView()">✖</button>`
+          : `<button class="small-btn" style="padding:4px 8px;font-size:12px;" onclick="toggleView(${i})" ${isPlaying ? 'disabled' : ''}>👁</button>`;
+
+        tr.innerHTML = `
+          <td>${i + 1}</td>
+          <td>${s[0]}</td>
+          <td>${s[3]}</td>
+          <td>${s[6]}</td>
+          <td>${s[9]}</td>
+          <td>${s[12]}</td>
+          <td>${s[15]}</td>
+          <td><input type="number" min="50" step="50" value="${s.delay}"
+                onchange="updateStepDelay(${i}, this.value)" ${isPlaying ? 'disabled' : ''}></td>
+          <td>${actionsHtml}</td>
+          <td><button class="remove-btn" onclick="removeStep(${i})" ${isPlaying ? 'disabled' : ''}>✕</button></td>
+        `;
+        body.appendChild(tr);
+      });
+      const hasSteps = sequence.length > 0;
+      document.getElementById('playOnceBtn').disabled = !hasSteps || isPlaying;
+      document.getElementById('playLoopBtn').disabled = !hasSteps || isPlaying;
+    }
+
+    function updateStepDelay(i, val) {
+      sequence[i].delay = parseInt(val) || 800;
+      autosave();
+    }
+
+    // Simple demo: open gripper, swing to a pick spot, close, lift,
+    // swing to a drop spot, open, lift, return home.
+    function loadDemoSequence() {
+      if (sequence.length && !confirm("This replaces your current sequence. Continue?")) return;
+      sequence = [
+        { 0: 90,  3: 90, 6: 90,  9: 90, 12: 90, 15: 130, delay: 700 }, // home, gripper open
+        { 0: 60,  3: 60, 6: 110, 9: 90, 12: 90, 15: 130, delay: 700 }, // swing + lower toward pick spot
+        { 0: 60,  3: 60, 6: 110, 9: 90, 12: 90, 15: 40,  delay: 500 }, // close gripper on object
+        { 0: 60,  3: 90, 6: 90,  9: 90, 12: 90, 15: 40,  delay: 600 }, // lift
+        { 0: 120, 3: 90, 6: 90,  9: 90, 12: 90, 15: 40,  delay: 700 }, // swing toward drop spot
+        { 0: 120, 3: 60, 6: 110, 9: 90, 12: 90, 15: 40,  delay: 700 }, // lower to drop spot
+        { 0: 120, 3: 60, 6: 110, 9: 90, 12: 90, 15: 130, delay: 500 }, // open gripper, release
+        { 0: 120, 3: 90, 6: 90,  9: 90, 12: 90, 15: 130, delay: 600 }, // lift
+        { 0: 90,  3: 90, 6: 90,  9: 90, 12: 90, 15: 90,  delay: 800 }  // return home
+      ];
+      renderSequence();
+      autosave();
+    }
+
+    async function applyStep(s) {
+      await moveTo(s, () => isPlaying);
+    }
+
+    // Cancellable sleep: polls every 50ms so Stop is near-instant
+    function sleep(ms) {
+      return new Promise(resolve => {
+        let elapsed = 0;
+        const interval = setInterval(() => {
+          elapsed += 50;
+          if (!isPlaying || elapsed >= ms) {
+            clearInterval(interval);
+            resolve();
+          }
+        }, 50);
+      });
+    }
+
+    function setPlayingUI(playing) {
+      isPlaying = playing;
+      if (playing && (editingIndex !== null || viewIndex !== null)) {
+        editingIndex = null;
+        viewIndex = null;
+        updateModeButtons();
+      }
+      document.getElementById('playOnceBtn').disabled = playing || sequence.length === 0;
+      document.getElementById('playLoopBtn').disabled = playing || sequence.length === 0;
+      document.getElementById('stopBtn').disabled = !playing;
+    }
+
+    async function runSteps(loopForever) {
+      let loopCount = 0;
+      do {
+        loopCount++;
+        for (let i = 0; i < sequence.length && isPlaying; i++) {
+          renderSequence(i);
+          document.getElementById('playStatus').textContent = loopForever
+            ? `▶ Loop ${loopCount} — step ${i + 1}/${sequence.length} (moving)`
+            : `▶ Step ${i + 1}/${sequence.length} (moving)`;
+          await applyStep(sequence[i]);
+          if (!isPlaying) break;
+          document.getElementById('playStatus').textContent = loopForever
+            ? `▶ Loop ${loopCount} — step ${i + 1}/${sequence.length} (holding)`
+            : `▶ Step ${i + 1}/${sequence.length} (holding)`;
+          await sleep(sequence[i].delay);
+        }
+      } while (loopForever && isPlaying);
+
+      const completed = isPlaying;
+      setPlayingUI(false);
+      renderSequence(-1);
+      document.getElementById('playStatus').textContent = completed ? '✅ Done' : '⏹ Stopped';
+    }
+
+    function playOnce() {
+      if (isPlaying || sequence.length === 0) return;
+      setPlayingUI(true);
+      runSteps(false);
+    }
+
+    function playLoop() {
+      if (isPlaying || sequence.length === 0) return;
+      setPlayingUI(true);
+      runSteps(true);
+    }
+
+    function stopSequence() {
+      isPlaying = false;
+    }
+
+    // ---------- Save / load named sequences (localStorage) ----------
+
+    const STORAGE_PREFIX = 'armseq_';
+    const AUTOSAVE_KEY = 'armseq_autosave';
+
+    function autosave() {
+      try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(sequence)); } catch (e) {}
+    }
+
+    function restoreAutosave() {
+      try {
+        const raw = localStorage.getItem(AUTOSAVE_KEY);
+        if (raw) sequence = JSON.parse(raw);
+      } catch (e) {}
+    }
+
+    function refreshSavedList() {
+      const select = document.getElementById('savedSeqs');
+      select.innerHTML = '';
+      Object.keys(localStorage)
+        .filter(k => k.startsWith(STORAGE_PREFIX) && k !== AUTOSAVE_KEY)
+        .forEach(k => {
+          const name = k.slice(STORAGE_PREFIX.length);
+          const opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          select.appendChild(opt);
+        });
+    }
+
+    function saveNamedSequence() {
+      const name = document.getElementById('seqName').value.trim();
+      if (!name) { alert('Give the sequence a name first.'); return; }
+      if (sequence.length === 0) { alert('Sequence is empty - nothing to save.'); return; }
+      localStorage.setItem(STORAGE_PREFIX + name, JSON.stringify(sequence));
+      refreshSavedList();
+      document.getElementById('savedSeqs').value = name;
+    }
+
+    function loadNamedSequence() {
+      const name = document.getElementById('savedSeqs').value;
+      if (!name) return;
+      const raw = localStorage.getItem(STORAGE_PREFIX + name);
+      if (!raw) return;
+      sequence = JSON.parse(raw);
+      renderSequence();
+      autosave();
+    }
+
+    function deleteNamedSequence() {
+      const name = document.getElementById('savedSeqs').value;
+      if (!name) return;
+      if (!confirm(`Delete saved sequence "${name}"?`)) return;
+      localStorage.removeItem(STORAGE_PREFIX + name);
+      refreshSavedList();
+    }
+
+    // Init
+    setTimeout(() => {
+      centerAll();
+      restoreAutosave();
+      renderSequence();
+      updateModeButtons();
+      refreshSavedList();
+    }, 500);
+  </script>
+</body>
+</html>
